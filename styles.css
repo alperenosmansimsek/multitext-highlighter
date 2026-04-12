@@ -1,0 +1,15 @@
+.mh-highlight {
+  border-radius: 3px;
+  padding: 0 2px;
+  margin: 0 1px;
+  line-height: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  display: inline;
+  cursor: default;
+  transition: opacity 0.15s;
+}
+
+.mh-highlight:hover {
+  opacity: 0.75;
+}
