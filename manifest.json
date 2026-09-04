@@ -2,24 +2,21 @@
   "manifest_version": 3,
   "name": "Multi Highlighter",
   "version": "1.0",
-  "description": "Highlight multiple words in different colors simultaneously",
+  "description": "Highlight multiple words or phrases and copy the detected ASINs to clipboard.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage"
   ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "host_permissions": ["<all_urls>"],
   "action": {
-    "default_popup": "popup.html",
-    "default_title": "Multi Highlighter"
+    "default_popup": "popup.html"
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "css": ["styles.css"]
+      "css": ["inject.css"]
     }
   ]
 }

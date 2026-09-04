@@ -1,219 +1,283 @@
-// content.js
+let currentOptions = { active: true, caseSensitive: false, diacritics: false };
+let targetWords = [];
+let colorMap = {};
+let observer = null;
 
-// 1. COLORS
 const COLORS = [
   "#FFD700", "#FF6B6B", "#6BCB77", "#4D96FF",
   "#FF922B", "#CC5DE8", "#20C997", "#F06595",
-  "#74C0FC", "#A9E34B" , "#FFB703", "#3A86FF", "#FF006E", "#8338EC",
+  "#74C0FC", "#A9E34B", "#FFB703", "#3A86FF", "#FF006E", "#8338EC",
   "#FFBE0B", "#FB5607", "#FF006E", "#8338EC",
-  "#3A86FF", "#FF006E", "#8338EC", "#FFBE0B",
-  "#FB5607", "#FF006E", "#8338EC", "#3A86FF", "#FF006E", "#8338EC", "#FFBE0B", "#FB5607",
+  "#3A86FF", "#FF006E", "#8338EC", "#FFBE0B"
 ];
 
-// 2. STATE
-let highlightMap = {};
-let currentSettings = { caseSensitive: false, diacritics: true };
-let observer = null;
-let isProcessing = false;
-
-// 3. INIT: load saved words and settings, apply highlights, and start observing DOM changes
-async function init() {
-  const saved = await chrome.storage.local.get(["words", "caseSensitive", "diacritics"]);
-  if (saved.words && saved.words.trim()) {
-    applyHighlights(saved.words, saved.caseSensitive, saved.diacritics);
-  }
-  startObserver();
-}
-
-// 4. MUTATION OBSERVER: watch for new nodes added to the DOM and apply highlights to them
-function startObserver() {
-  if (observer) observer.disconnect();
-
-  observer = new MutationObserver((mutations) => {
-    if (isProcessing) return;
-    if (Object.keys(highlightMap).length === 0) return;
-
-    const newNodes = [];
-    mutations.forEach(mutation => {
-      mutation.addedNodes.forEach(node => {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          newNodes.push(node);
-        }
-      });
-    });
-
-    if (newNodes.length > 0) {
-      isProcessing = true;
-      newNodes.forEach(node => walkTextNodes(node));
-      isProcessing = false;
-    }
+// ==========================================================================
+// COLOR MAP
+// ==========================================================================
+function generateColorMap(words) {
+  colorMap = {};
+  words.forEach((word, index) => {
+    const key = currentOptions.caseSensitive ? word : word.toLowerCase();
+    colorMap[key] = COLORS[index % COLORS.length];
   });
-
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  }); 
 }
 
-// 5.  listen for changes in storage and update highlights accordingly
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes.words || changes.caseSensitive || changes.diacritics) {
-    chrome.storage.local.get(["words", "caseSensitive", "diacritics"], (saved) => {
-      clearHighlights();
-      if (saved.words && saved.words.trim()) {
-        applyHighlights(saved.words, saved.caseSensitive, saved.diacritics);
-      }
-    });
-  }
-});
-
-// 6.  main function to apply highlights: prepare the highlight map based on user input, then walk through text nodes to apply highlights
-function applyHighlights(rawText, caseSensitive = false, diacritics = true) {
-  currentSettings = { caseSensitive, diacritics };
-  
-  highlightMap = {};
-  let colorIndex = 0;
-
-  const words = rawText.split(/\s+/).filter(w => w.length > 0);
-
-  words.forEach(word => {
-    const key = prepareWord(word, caseSensitive, diacritics);
-    if (!highlightMap[key]) {
-      highlightMap[key] = COLORS[colorIndex % COLORS.length];
-      colorIndex++;
-    }
-  });
-
-  isProcessing = true;
-  walkTextNodes(document.body);
-  isProcessing = false;
+// ==========================================================================
+// DIACRITICS
+// ==========================================================================
+function removeDiacritics(str) {
+  return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\u0142/g, "l").replace(/\u0141/g, "L");
 }
 
-// 7. TEXT NODE WALKER 
-function walkTextNodes(root) {
-  if (!root) return;
+// ==========================================================================
+// IS WORD CHAR - word boundary check
+// ==========================================================================
+function isWordChar(ch) {
+  if (!ch) return false;
+  const code = ch.charCodeAt(0);
 
-  const walker = document.createTreeWalker(
-    root,
-    NodeFilter.SHOW_TEXT,
-    {
-      acceptNode(node) {
-        const parent = node.parentElement;
-        if (!parent) return NodeFilter.FILTER_REJECT;
-        if (["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT"].includes(parent.tagName)) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        if (parent.classList && parent.classList.contains("mh-highlight")) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        if (node.textContent.trim() === "") return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    }
-  );
+  // ASCII digits (0-9)
+  if (code >= 48 && code <= 57) return true;
+  // ASCII uppercase (A-Z)
+  if (code >= 65 && code <= 90) return true;
+  // ASCII lowercase (a-z)
+  if (code >= 97 && code <= 122) return true;
+  // Extended Latin (accented chars: é, ñ, ü, etc.)
+  if (code >= 192 && code <= 687) return true;
 
-  const nodesToReplace = [];
-  let node;
-  while ((node = walker.nextNode())) {
-    nodesToReplace.push(node);
-  }
-  nodesToReplace.forEach(node => replaceTextNode(node));
+  // --- CJK & Special Ranges: don't count as word characters ---
+  // CJK Unified Ideographs (Chinese/Japanese/Korean): U+4E00 - U+9FFF
+  if (code >= 0x4E00 && code <= 0x9FFF) return false;
+  // CJK Compatibility Ideographs: U+F900 - U+FAFF
+  if (code >= 0xF900 && code <= 0xFAFF) return false;
+  // Hiragana: U+3040 - U+309F
+  if (code >= 0x3040 && code <= 0x309F) return false;
+  // Katakana: U+30A0 - U+30FF
+  if (code >= 0x30A0 && code <= 0x30FF) return false;
+  // CJK Punctuation (、。「」 etc.): U+3000 - U+303F
+  if (code >= 0x3000 && code <= 0x303F) return false;
+  // Fullwidth punctuation/symbols: U+FF00 - U+FFEF
+  if (code >= 0xFF00 && code <= 0xFFEF) return false;
+  // Korean Hangul: U+AC00 - U+D7AF
+  if (code >= 0xAC00 && code <= 0xD7AF) return false;
+  // Arabic: U+0600 - U+06FF
+  if (code >= 0x0600 && code <= 0x06FF) return false;
+
+  // Other Unicode letters and numbers (for broader language support)
+  if (code > 687) return /[\p{L}\p{N}]/u.test(ch);
+
+  return false;
 }
 
-
-// 8. replace text node with highlighted spans: find matches, create a document fragment with text and span nodes, and replace the original text node
-function replaceTextNode(textNode) {
-  const originalText = textNode.textContent;
-  const words = Object.keys(highlightMap);
-  if (words.length === 0) return;
-
-  const escapedWords = words.map(w => `(?<=[^\\w]|^)${escapeRegex(w)}(?=[^\\w]|$)`);
-  const flags = currentSettings.caseSensitive ? "g" : "gi";
-  const regex = new RegExp(`(${escapedWords.join("|")})`, flags);
-
-  // Arama için metni hazırla
-  const searchText = prepareText(originalText, currentSettings.caseSensitive, currentSettings.diacritics);
-
-  const matches = [];
-  let match;
-  while ((match = regex.exec(searchText)) !== null) {
-    const key = prepareWord(match[0], currentSettings.caseSensitive, currentSettings.diacritics);
-    if (highlightMap[key]) {
-      matches.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        color: highlightMap[key]
-      });
-    }
-  }
-
-  if (matches.length === 0) return;
-
-  const fragment = document.createDocumentFragment();
-  let lastIndex = 0;
-
-  matches.forEach(({ start, end, color }) => {
-    if (start > lastIndex) {
-      fragment.appendChild(document.createTextNode(originalText.slice(lastIndex, start)));
-    }
-    const span = document.createElement("span");
-    span.className = "mh-highlight";
-    span.textContent = originalText.slice(start, end);
-    span.style.backgroundColor = color;
-    span.dataset.mhWord = originalText.slice(start, end);
-    fragment.appendChild(span);
-    lastIndex = end;
-  });
-
-  if (lastIndex < originalText.length) {
-    fragment.appendChild(document.createTextNode(originalText.slice(lastIndex)));
-  }
-
-  if (textNode.parentNode) {
-    textNode.parentNode.replaceChild(fragment, textNode);
-  }
-}
-
-// 9. clear highlights: find all highlight spans, replace with original text, and normalize to merge adjacent text nodes
-function clearHighlights() {
-  document.querySelectorAll("span.mh-highlight").forEach(span => {
-    const parent = span.parentNode;
-    if (parent) {
-      parent.replaceChild(document.createTextNode(span.textContent), span);
-      parent.normalize();
-    }
-  });
-  highlightMap = {};
-}
-
-// 10. utility functions: escape regex special characters, prepare word for matching, and prepare text for searching
-function prepareText(text, caseSensitive, diacritics) {
+// ==========================================================================
+// PREPARE TEXT - prepare text for searching based on options (diacritics, case sensitivity)
+// ==========================================================================
+function prepareText(text) {
   let result = text;
-  if (diacritics) {
-    result = result.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (currentOptions.diacritics) {
+    result = removeDiacritics(result);
   }
-  if (!caseSensitive) {
+  if (!currentOptions.caseSensitive) {
     result = result.toLowerCase();
   }
   return result;
 }
 
-function prepareWord(word, caseSensitive, diacritics) {
-  return prepareText(word, caseSensitive, diacritics ?? true);
+// ==========================================================================
+// COUNT WORDS
+// ==========================================================================
+function countWords() {
+  const pageText = document.body.innerText || "";
+  const searchPage = prepareText(pageText);
+  const counts = {};
+
+  targetWords.forEach(word => {
+    const key = prepareText(word);
+    const keyLen = key.length;
+    let count = 0;
+    let startPos = 0;
+
+    while (true) {
+      const idx = searchPage.indexOf(key, startPos);
+      if (idx === -1) break;
+
+      const charBefore = idx > 0 ? searchPage[idx - 1] : " ";
+      const charAfter = idx + keyLen < searchPage.length ? searchPage[idx + keyLen] : " ";
+
+      if (!isWordChar(charBefore) && !isWordChar(charAfter)) {
+        count++;
+      }
+      startPos = idx + keyLen;
+    }
+
+    counts[word] = count;
+  });
+
+  return counts;
 }
 
-// 11. REGEX ESCAPE
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// ==========================================================================
+// HIGHLIGHT
+// ==========================================================================
+function highlightPage() {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode: function(node) {
+      const parent = node.parentNode;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      const tag = parent.tagName;
+      if (['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'NOSCRIPT'].includes(tag)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      if (parent.classList && parent.classList.contains('mh-highlight')) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      if (!node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+
+  nodes.forEach(textNode => {
+    const originalText = textNode.textContent;
+    if (!originalText.trim()) return;
+
+    const searchText = prepareText(originalText);
+
+    // search for matches
+    const allMatches = [];
+
+    targetWords.forEach(word => {
+      const key = prepareText(word);
+      const keyLen = key.length;
+      let startPos = 0;
+
+      while (true) {
+        const idx = searchText.indexOf(key, startPos);
+        if (idx === -1) break;
+
+        const charBefore = idx > 0 ? searchText[idx - 1] : " ";
+        const charAfter = idx + keyLen < searchText.length ? searchText[idx + keyLen] : " ";
+
+        if (!isWordChar(charBefore) && !isWordChar(charAfter)) {
+          const colorKey = currentOptions.caseSensitive ? word : word.toLowerCase();
+          allMatches.push({
+            start: idx,
+            end: idx + keyLen,
+            color: colorMap[colorKey] || '#FFD700'
+          });
+        }
+        startPos = idx + keyLen;
+      }
+    });
+
+    if (allMatches.length === 0) return;
+
+    // sort and merge overlapping matches
+    allMatches.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+
+    const finalMatches = [];
+    let lastEnd = -1;
+    for (let i = 0; i < allMatches.length; i++) {
+      if (allMatches[i].start >= lastEnd) {
+        finalMatches.push(allMatches[i]);
+        lastEnd = allMatches[i].end;
+      }
+    }
+
+    // create a document fragment to replace the text node
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+
+    for (let i = 0; i < finalMatches.length; i++) {
+      const m = finalMatches[i];
+      if (m.start > lastIndex) {
+        fragment.appendChild(document.createTextNode(originalText.slice(lastIndex, m.start)));
+      }
+      const span = document.createElement('span');
+      span.className = 'mh-highlight';
+      span.style.backgroundColor = m.color;
+      span.style.borderRadius = '3px';
+      span.style.padding = '1px 2px';
+      span.textContent = originalText.slice(m.start, m.end);
+      fragment.appendChild(span);
+      lastIndex = m.end;
+    }
+
+    if (lastIndex < originalText.length) {
+      fragment.appendChild(document.createTextNode(originalText.slice(lastIndex)));
+    }
+
+    if (textNode.parentNode) {
+      textNode.parentNode.replaceChild(fragment, textNode);
+    }
+  });
 }
 
-// 12. listen for messages from the popup to clear highlights
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === "clear") {
+// ==========================================================================
+// CLEAR HIGHLIGHTS
+// ==========================================================================
+function clearHighlights() {
+  document.querySelectorAll('.mh-highlight').forEach(span => {
+    const textNode = document.createTextNode(span.textContent);
+    if (span.parentNode) {
+      span.parentNode.replaceChild(textNode, span);
+    }
+  });
+  document.body.normalize();
+}
+
+// ==========================================================================
+// MESSAGE LISTENER - The model: popup sends a message, results are returned
+// ==========================================================================
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "highlight") {
+    // clear
     clearHighlights();
+
+    // get the words and options from the request
+    targetWords = request.words || [];
+    currentOptions = request.options || { active: true, caseSensitive: false, diacritics: false };
+    generateColorMap(targetWords);
+
+    if (!currentOptions.active || targetWords.length === 0) {
+      sendResponse({ counts: {} });
+      return true;
+    }
+
+    // 1. first count the words
+    const counts = countWords();
+
+    // 2. after counting, highlight the page
+    highlightPage();
+
+    // 3. MutationObserver
+    if (observer) observer.disconnect();
+    observer = new MutationObserver(() => {
+      observer.disconnect();
+      highlightPage();
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // 4. return the counts to the popup
+    sendResponse({ counts: counts });
+
+  } else if (request.action === "clear") {
+    if (observer) observer.disconnect();
+    clearHighlights();
+    targetWords = [];
     sendResponse({ status: "cleared" });
   }
+
+  else if (request.action === "getPageText") {
+    // Sayfadaki tüm görünür metni al (script/style hariç)
+    const pageText = document.body.innerText || "";
+    sendResponse({ text: pageText });
+  }
+
+  return true;
 });
 
-// START THE EXTENSION
-init();
